@@ -98,9 +98,9 @@ std::string MakeCamel(const std::string &in, bool first) {
   std::string s;
   for (size_t i = 0; i < in.length(); i++) {
     if (!i && first)
-      s += static_cast<char>(toupper(in[0]));
+      s += CharToUpper(in[0]);
     else if (in[i] == '_' && i + 1 < in.length())
-      s += static_cast<char>(toupper(in[++i]));
+      s += CharToUpper(in[++i]);
     else
       s += in[i];
   }
@@ -112,7 +112,7 @@ std::string MakeScreamingCamel(const std::string &in) {
   std::string s;
   for (size_t i = 0; i < in.length(); i++) {
     if (in[i] != '_')
-      s += static_cast<char>(toupper(in[i]));
+      s += CharToUpper(in[i]);
     else
       s += in[i];
   }
@@ -743,6 +743,35 @@ CheckedError Parser::ParseField(StructDef &struct_def) {
       return Error(
           "default values currently only supported for scalars in tables");
   }
+
+  // Mark the optional scalars. Note that a side effect of ParseSingleValue is
+  // fixing field->value.constant to null.
+  if (IsScalar(type.base_type)) {
+    field->optional = (field->value.constant == "null");
+    if (field->optional) {
+      if (type.enum_def && type.enum_def->Lookup("null")) {
+        FLATBUFFERS_ASSERT(IsInteger(type.base_type));
+        return Error(
+            "the default 'null' is reserved for declaring optional scalar "
+            "fields, it conflicts with declaration of enum '" +
+            type.enum_def->name + "'.");
+      }
+      if (field->attributes.Lookup("key")) {
+        return Error(
+            "only a non-optional scalar field can be used as a 'key' field");
+      }
+      if (!SupportsOptionalScalars()) {
+        return Error(
+            "Optional scalars are not yet supported in at least one the of "
+            "the specified programming languages.");
+      }
+    }
+  } else {
+    // For nonscalars, only required fields are non-optional.
+    // At least until https://github.com/google/flatbuffers/issues/6053
+    field->optional = !field->required;
+  }
+
   // Append .0 if the value has not it (skip hex and scientific floats).
   // This suffix needed for generated C++ code.
   if (IsFloat(type.base_type)) {
@@ -772,6 +801,7 @@ CheckedError Parser::ParseField(StructDef &struct_def) {
     } else {
       // All unions should have the NONE ("0") enum value.
       auto in_enum = type.enum_def->attributes.Lookup("bit_flags") ||
+                     field->IsScalarOptional() ||
                      type.enum_def->FindByValue(field->value.constant);
       if (false == in_enum)
         return Error("default value of " + field->value.constant +
@@ -833,17 +863,7 @@ CheckedError Parser::ParseField(StructDef &struct_def) {
   if (field->required && (struct_def.fixed || IsScalar(type.base_type)))
     return Error("only non-scalar fields in tables may be 'required'");
 
-  // Mark the optional scalars. Note that a side effect of ParseSingleValue is
-  // fixing field->value.constant to null.
-  if (IsScalar(type.base_type)) {
-    field->optional = (field->value.constant == "null");
-    if (field->optional && !SupportsOptionalScalars()) {
-      return Error(
-        "Optional scalars are not yet supported in at least one the of "
-        "the specified programming languages."
-      );
-    }
-  } else {
+  if (!IsScalar(type.base_type)) {
     // For nonscalars, only required fields are non-optional.
     // At least until https://github.com/google/flatbuffers/issues/6053
     field->optional = !field->required;
@@ -1211,7 +1231,7 @@ CheckedError Parser::ParseTable(const StructDef &struct_def, std::string *value,
       if (!struct_def.sortbysize ||
           size == SizeOf(field_value.type.base_type)) {
         switch (field_value.type.base_type) {
-          // clang-format off
+// clang-format off
           #define FLATBUFFERS_TD(ENUM, IDLTYPE, CTYPE, ...) \
             case BASE_TYPE_ ## ENUM: \
               builder_.Pad(field->padding); \
@@ -1350,7 +1370,7 @@ CheckedError Parser::ParseVector(const Type &type, uoffset_t *ovalue,
     // start at the back, since we're building the data backwards.
     auto &val = field_stack_.back().first;
     switch (val.type.base_type) {
-      // clang-format off
+// clang-format off
       #define FLATBUFFERS_TD(ENUM, IDLTYPE, CTYPE,...) \
         case BASE_TYPE_ ## ENUM: \
           if (IsStruct(val.type)) SerializeStruct(*val.type.struct_def, val); \
@@ -1540,7 +1560,7 @@ CheckedError Parser::ParseMetaData(SymbolTable<Value> *attributes) {
                      name);
       NEXT();
       auto e = new Value();
-      attributes->Add(name, e);
+      if (attributes->Add(name, e)) Warning("attribute already found: " + name);
       if (Is(':')) {
         NEXT();
         ECHECK(ParseSingleValue(&name, *e, true));
@@ -2260,10 +2280,17 @@ CheckedError Parser::CheckClash(std::vector<FieldDef *> &fields,
   return NoError();
 }
 
+bool Parser::SupportsOptionalScalars(const flatbuffers::IDLOptions &opts) {
+  static FLATBUFFERS_CONSTEXPR unsigned long supported_langs =
+      IDLOptions::kRust | IDLOptions::kSwift | IDLOptions::kLobster |
+      IDLOptions::kKotlin | IDLOptions::kCpp;
+  unsigned long langs = opts.lang_to_generate;
+  return (langs > 0 && langs < IDLOptions::kMAX) && !(langs & ~supported_langs);
+}
 
 bool Parser::SupportsOptionalScalars() const {
-  return !(opts.lang_to_generate &
-    ~(IDLOptions::kRust | IDLOptions::kSwift | IDLOptions::kLobster));
+  // Check in general if a language isn't specified.
+  return opts.lang_to_generate == 0 || SupportsOptionalScalars(opts);
 }
 
 bool Parser::SupportsAdvancedUnionFeatures() const {

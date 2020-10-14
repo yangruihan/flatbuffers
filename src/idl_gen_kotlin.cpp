@@ -159,6 +159,24 @@ class KotlinGenerator : public BaseGenerator {
     }
   }
 
+  // with the addition of optional scalar types,
+  // we are adding the nullable '?' operator to return type of a field.
+  std::string GetterReturnType(const FieldDef &field) const {
+    auto base_type = field.value.type.base_type;
+
+    auto r_type = GenTypeGet(field.value.type);
+    if (field.IsScalarOptional() ||
+        // string, structs and unions
+        (base_type == BASE_TYPE_STRING || base_type == BASE_TYPE_STRUCT ||
+         base_type == BASE_TYPE_UNION) ||
+        // vector of anything not scalar
+        (base_type == BASE_TYPE_VECTOR &&
+         !IsScalar(field.value.type.VectorType().base_type))) {
+      r_type += "?";
+    }
+    return r_type;
+  }
+
   std::string GenTypeGet(const Type &type) const {
     return IsScalar(type.base_type) ? GenTypeBasic(type.base_type)
                                     : GenTypePointer(type);
@@ -179,6 +197,18 @@ class KotlinGenerator : public BaseGenerator {
   // - Floats are upcasted to doubles
   // - Unsigned are casted to signed
   std::string GenFBBDefaultValue(const FieldDef &field) const {
+    if (field.IsScalarOptional()) {
+      // although default value is null, java API forces us to present a real
+      // default value for scalars, while adding a field to the buffer. This is
+      // not a problem because the default can be representing just by not
+      // calling builder.addMyField()
+      switch (field.value.type.base_type) {
+        case BASE_TYPE_DOUBLE:
+        case BASE_TYPE_FLOAT: return "0.0";
+        case BASE_TYPE_BOOL: return "false";
+        default: return "0";
+      }
+    }
     auto out = GenDefaultValue(field, true);
     // All FlatBufferBuilder default floating point values are doubles
     if (field.value.type.base_type == BASE_TYPE_FLOAT) {
@@ -204,6 +234,8 @@ class KotlinGenerator : public BaseGenerator {
                               bool force_signed = false) const {
     auto &value = field.value;
     auto base_type = field.value.type.base_type;
+
+    if (field.IsScalarOptional()) { return "null"; }
     if (IsFloat(base_type)) {
       auto val = KotlinFloatGen.GenFloatConstant(field);
       if (base_type == BASE_TYPE_DOUBLE && val.back() == 'f') {
@@ -271,12 +303,15 @@ class KotlinGenerator : public BaseGenerator {
           }
           writer += ")";
         });
-        GenerateFunOneLine(writer, "name", "e: Int", "String", [&]() {
-          writer += "names[e\\";
-          if (enum_def.MinValue()->IsNonZero())
-            writer += " - " + enum_def.MinValue()->name + ".toInt()\\";
-          writer += "]";
-        }, parser_.opts.gen_jvmstatic);
+        GenerateFunOneLine(
+            writer, "name", "e: Int", "String",
+            [&]() {
+              writer += "names[e\\";
+              if (enum_def.MinValue()->IsNonZero())
+                writer += " - " + enum_def.MinValue()->name + ".toInt()\\";
+              writer += "]";
+            },
+            parser_.opts.gen_jvmstatic);
       }
     });
     writer.DecrementIdentLevel();
@@ -417,7 +452,8 @@ class KotlinGenerator : public BaseGenerator {
     return key_offset;
   }
 
-  void GenStruct(StructDef &struct_def, CodeWriter &writer, IDLOptions options) const {
+  void GenStruct(StructDef &struct_def, CodeWriter &writer,
+                 IDLOptions options) const {
     if (struct_def.generated) return;
 
     GenerateComment(struct_def.doc_comment, writer, &comment_config);
@@ -456,9 +492,10 @@ class KotlinGenerator : public BaseGenerator {
           // Generate verson check method.
           // Force compile time error if not using the same version
           // runtime.
-          GenerateFunOneLine(writer, "validateVersion", "", "", [&]() {
-            writer += "Constants.FLATBUFFERS_1_12_0()";
-          }, options.gen_jvmstatic);
+          GenerateFunOneLine(
+              writer, "validateVersion", "", "",
+              [&]() { writer += "Constants.FLATBUFFERS_1_12_0()"; },
+              options.gen_jvmstatic);
 
           GenerateGetRootAsAccessors(Esc(struct_def.name), writer, options);
           GenerateBufferHasIdentifier(struct_def, writer, options);
@@ -488,8 +525,10 @@ class KotlinGenerator : public BaseGenerator {
           GenerateEndStructMethod(struct_def, writer, options);
           auto file_identifier = parser_.file_identifier_;
           if (parser_.root_struct_def_ == &struct_def) {
-            GenerateFinishStructBuffer(struct_def, file_identifier, writer, options);
-            GenerateFinishSizePrefixed(struct_def, file_identifier, writer, options);
+            GenerateFinishStructBuffer(struct_def, file_identifier, writer,
+                                       options);
+            GenerateFinishSizePrefixed(struct_def, file_identifier, writer,
+                                       options);
           }
 
           if (struct_def.has_key) {
@@ -574,9 +613,10 @@ class KotlinGenerator : public BaseGenerator {
     auto id = identifier.length() > 0 ? ", \"" + identifier + "\"" : "";
     auto params = "builder: FlatBufferBuilder, offset: Int";
     auto method_name = "finishSizePrefixed" + Esc(struct_def.name) + "Buffer";
-    GenerateFunOneLine(writer, method_name, params, "", [&]() {
-      writer += "builder.finishSizePrefixed(offset" + id + ")";
-    }, options.gen_jvmstatic);
+    GenerateFunOneLine(
+        writer, method_name, params, "",
+        [&]() { writer += "builder.finishSizePrefixed(offset" + id + ")"; },
+        options.gen_jvmstatic);
   }
   void GenerateFinishStructBuffer(StructDef &struct_def,
                                   const std::string &identifier,
@@ -585,9 +625,10 @@ class KotlinGenerator : public BaseGenerator {
     auto id = identifier.length() > 0 ? ", \"" + identifier + "\"" : "";
     auto params = "builder: FlatBufferBuilder, offset: Int";
     auto method_name = "finish" + Esc(struct_def.name) + "Buffer";
-    GenerateFunOneLine(writer, method_name, params, "",
-                       [&]() { writer += "builder.finish(offset" + id + ")"; },
-                       options.gen_jvmstatic);
+    GenerateFunOneLine(
+        writer, method_name, params, "",
+        [&]() { writer += "builder.finish(offset" + id + ")"; },
+        options.gen_jvmstatic);
   }
 
   void GenerateEndStructMethod(StructDef &struct_def, CodeWriter &writer,
@@ -598,18 +639,21 @@ class KotlinGenerator : public BaseGenerator {
     auto returns = "Int";
     auto field_vec = struct_def.fields.vec;
 
-    GenerateFun(writer, name, params, returns, [&]() {
-      writer += "val o = builder.endTable()";
-      writer.IncrementIdentLevel();
-      for (auto it = field_vec.begin(); it != field_vec.end(); ++it) {
-        auto &field = **it;
-        if (field.deprecated || !field.required) { continue; }
-        writer.SetValue("offset", NumToString(field.value.offset));
-        writer += "builder.required(o, {{offset}})";
-      }
-      writer.DecrementIdentLevel();
-      writer += "return o";
-    }, options.gen_jvmstatic);
+    GenerateFun(
+        writer, name, params, returns,
+        [&]() {
+          writer += "val o = builder.endTable()";
+          writer.IncrementIdentLevel();
+          for (auto it = field_vec.begin(); it != field_vec.end(); ++it) {
+            auto &field = **it;
+            if (field.deprecated || !field.required) { continue; }
+            writer.SetValue("offset", NumToString(field.value.offset));
+            writer += "builder.required(o, {{offset}})";
+          }
+          writer.DecrementIdentLevel();
+          writer += "return o";
+        },
+        options.gen_jvmstatic);
   }
 
   // Generate a method to create a vector from a Kotlin array.
@@ -624,15 +668,18 @@ class KotlinGenerator : public BaseGenerator {
     writer.SetValue("root", GenMethod(vector_type));
     writer.SetValue("cast", CastToSigned(vector_type));
 
-    GenerateFun(writer, method_name, params, "Int", [&]() {
-      writer += "builder.startVector({{size}}, data.size, {{align}})";
-      writer += "for (i in data.size - 1 downTo 0) {";
-      writer.IncrementIdentLevel();
-      writer += "builder.add{{root}}(data[i]{{cast}})";
-      writer.DecrementIdentLevel();
-      writer += "}";
-      writer += "return builder.endVector()";
-    }, options.gen_jvmstatic);
+    GenerateFun(
+        writer, method_name, params, "Int",
+        [&]() {
+          writer += "builder.startVector({{size}}, data.size, {{align}})";
+          writer += "for (i in data.size - 1 downTo 0) {";
+          writer.IncrementIdentLevel();
+          writer += "builder.add{{root}}(data[i]{{cast}})";
+          writer.DecrementIdentLevel();
+          writer += "}";
+          writer += "return builder.endVector()";
+        },
+        options.gen_jvmstatic);
   }
 
   void GenerateStartVectorField(FieldDef &field, CodeWriter &writer,
@@ -646,28 +693,33 @@ class KotlinGenerator : public BaseGenerator {
 
     GenerateFunOneLine(
         writer, "start" + MakeCamel(Esc(field.name) + "Vector", true), params,
-        "", [&]() {
+        "",
+        [&]() {
           writer += "builder.startVector({{size}}, numElems, {{align}})";
-        }, options.gen_jvmstatic);
+        },
+        options.gen_jvmstatic);
   }
 
   void GenerateAddField(std::string field_pos, FieldDef &field,
                         CodeWriter &writer, const IDLOptions options) const {
     auto field_type = GenTypeBasic(field.value.type.base_type);
     auto secondArg = MakeCamel(Esc(field.name), false) + ": " + field_type;
-    GenerateFunOneLine(writer, "add" + MakeCamel(Esc(field.name), true),
-                       "builder: FlatBufferBuilder, " + secondArg, "", [&]() {
-                         auto method = GenMethod(field.value.type);
-                         writer.SetValue("field_name",
-                                         MakeCamel(Esc(field.name), false));
-                         writer.SetValue("method_name", method);
-                         writer.SetValue("pos", field_pos);
-                         writer.SetValue("default", GenFBBDefaultValue(field));
-                         writer.SetValue("cast", GenFBBValueCast(field));
 
-                         writer += "builder.add{{method_name}}({{pos}}, \\";
-                         writer += "{{field_name}}{{cast}}, {{default}})";
-                       }, options.gen_jvmstatic);
+    GenerateFunOneLine(
+        writer, "add" + MakeCamel(Esc(field.name), true),
+        "builder: FlatBufferBuilder, " + secondArg, "",
+        [&]() {
+          auto method = GenMethod(field.value.type);
+          writer.SetValue("field_name", MakeCamel(Esc(field.name), false));
+          writer.SetValue("method_name", method);
+          writer.SetValue("pos", field_pos);
+          writer.SetValue("default", GenFBBDefaultValue(field));
+          writer.SetValue("cast", GenFBBValueCast(field));
+
+          writer += "builder.add{{method_name}}({{pos}}, \\";
+          writer += "{{field_name}}{{cast}}, {{default}})";
+        },
+        options.gen_jvmstatic);
   }
 
   static std::string ToSignedType(const Type &type) {
@@ -710,12 +762,13 @@ class KotlinGenerator : public BaseGenerator {
   // fun startMonster(builder: FlatBufferBuilder) = builder.startTable(11)
   void GenerateStartStructMethod(StructDef &struct_def, CodeWriter &code,
                                  const IDLOptions options) const {
-    GenerateFunOneLine(code, "start" + Esc(struct_def.name),
-                       "builder: FlatBufferBuilder", "", [&]() {
-                         code += "builder.startTable(" +
-                                 NumToString(struct_def.fields.vec.size()) +
-                                 ")";
-                       }, options.gen_jvmstatic);
+    GenerateFunOneLine(
+        code, "start" + Esc(struct_def.name), "builder: FlatBufferBuilder", "",
+        [&]() {
+          code += "builder.startTable(" +
+                  NumToString(struct_def.fields.vec.size()) + ")";
+        },
+        options.gen_jvmstatic);
   }
 
   void GenerateTableCreator(StructDef &struct_def, CodeWriter &writer,
@@ -754,49 +807,63 @@ class KotlinGenerator : public BaseGenerator {
         } else {
           params << ": ";
         }
-        params << GenTypeBasic(field.value.type.base_type);
+        auto optional = field.IsScalarOptional() ? "?" : "";
+        params << GenTypeBasic(field.value.type.base_type) << optional;
       }
 
-      GenerateFun(writer, name, params.str(), "Int", [&]() {
-        writer.SetValue("vec_size", NumToString(fields_vec.size()));
+      GenerateFun(
+          writer, name, params.str(), "Int",
+          [&]() {
+            writer.SetValue("vec_size", NumToString(fields_vec.size()));
 
-        writer += "builder.startTable({{vec_size}})";
+            writer += "builder.startTable({{vec_size}})";
 
-        auto sortbysize = struct_def.sortbysize;
-        auto largest = sortbysize ? sizeof(largest_scalar_t) : 1;
-        for (size_t size = largest; size; size /= 2) {
-          for (auto it = fields_vec.rbegin(); it != fields_vec.rend(); ++it) {
-            auto &field = **it;
-            auto base_type_size = SizeOf(field.value.type.base_type);
-            if (!field.deprecated && (!sortbysize || size == base_type_size)) {
-              writer.SetValue("camel_field_name",
-                              MakeCamel(Esc(field.name), true));
-              writer.SetValue("field_name", MakeCamel(Esc(field.name), false));
+            auto sortbysize = struct_def.sortbysize;
+            auto largest = sortbysize ? sizeof(largest_scalar_t) : 1;
+            for (size_t size = largest; size; size /= 2) {
+              for (auto it = fields_vec.rbegin(); it != fields_vec.rend();
+                   ++it) {
+                auto &field = **it;
+                auto base_type_size = SizeOf(field.value.type.base_type);
+                if (!field.deprecated &&
+                    (!sortbysize || size == base_type_size)) {
+                  writer.SetValue("camel_field_name",
+                                  MakeCamel(Esc(field.name), true));
+                  writer.SetValue("field_name",
+                                  MakeCamel(Esc(field.name), false));
 
-              writer += "add{{camel_field_name}}(builder, {{field_name}}\\";
-              if (!IsScalar(field.value.type.base_type)) {
-                writer += "Offset\\";
+                  // we wrap on null check for scalar optionals
+                  writer += field.IsScalarOptional()
+                                ? "{{field_name}}?.run { \\"
+                                : "\\";
+
+                  writer += "add{{camel_field_name}}(builder, {{field_name}}\\";
+                  if (!IsScalar(field.value.type.base_type)) {
+                    writer += "Offset\\";
+                  }
+                  // we wrap on null check for scalar optionals
+                  writer += field.IsScalarOptional() ? ") }" : ")";
+                }
               }
-              writer += ")";
             }
-          }
-        }
-        writer += "return end{{struct_name}}(builder)";
-      }, options.gen_jvmstatic);
+            writer += "return end{{struct_name}}(builder)";
+          },
+          options.gen_jvmstatic);
     }
   }
-  void GenerateBufferHasIdentifier(StructDef &struct_def,
-                                   CodeWriter &writer, IDLOptions options) const {
+  void GenerateBufferHasIdentifier(StructDef &struct_def, CodeWriter &writer,
+                                   IDLOptions options) const {
     auto file_identifier = parser_.file_identifier_;
     // Check if a buffer has the identifier.
     if (parser_.root_struct_def_ != &struct_def || !file_identifier.length())
       return;
     auto name = MakeCamel(Esc(struct_def.name), false);
-    GenerateFunOneLine(writer, name + "BufferHasIdentifier", "_bb: ByteBuffer",
-                       "Boolean", [&]() {
-                         writer += "__has_identifier(_bb, \"" +
-                                   file_identifier + "\")";
-                       }, options.gen_jvmstatic);
+    GenerateFunOneLine(
+        writer, name + "BufferHasIdentifier", "_bb: ByteBuffer", "Boolean",
+        [&]() {
+          writer += "__has_identifier(_bb, \"" + file_identifier + "\")";
+        },
+        options.gen_jvmstatic);
   }
 
   void GenerateStructGetters(StructDef &struct_def, CodeWriter &writer) const {
@@ -812,7 +879,7 @@ class KotlinGenerator : public BaseGenerator {
       auto field_name = MakeCamel(Esc(field.name), false);
       auto field_type = GenTypeGet(field.value.type);
       auto field_default_value = GenDefaultValue(field);
-      auto return_type = GenTypeGet(field.value.type);
+      auto return_type = GetterReturnType(field);
       auto bbgetter = ByteBufferGetter(field.value.type, "bb");
       auto ucast = CastToUsigned(field);
       auto offset_val = NumToString(field.value.offset);
@@ -829,14 +896,13 @@ class KotlinGenerator : public BaseGenerator {
       writer.SetValue("bbgetter", bbgetter);
       writer.SetValue("ucast", ucast);
 
-      auto opt_ret_type = return_type + "?";
       // Generate the accessors that don't do object reuse.
       if (value_base_type == BASE_TYPE_STRUCT) {
         // Calls the accessor that takes an accessor object with a
         // new object.
         // val pos
         //     get() = pos(Vec3())
-        GenerateGetterOneLine(writer, field_name, opt_ret_type, [&]() {
+        GenerateGetterOneLine(writer, field_name, return_type, [&]() {
           writer += "{{field_name}}({{field_type}}())";
         });
       } else if (value_base_type == BASE_TYPE_VECTOR &&
@@ -844,8 +910,8 @@ class KotlinGenerator : public BaseGenerator {
         // Accessors for vectors of structs also take accessor objects,
         // this generates a variant without that argument.
         // ex: fun weapons(j: Int) = weapons(Weapon(), j)
-        GenerateFunOneLine(writer, field_name, "j: Int", opt_ret_type, [&]() {
-          writer += "{{field_name}}({{return_type}}(), j)";
+        GenerateFunOneLine(writer, field_name, "j: Int", return_type, [&]() {
+          writer += "{{field_name}}({{field_type}}(), j)";
         });
       }
 
@@ -872,7 +938,7 @@ class KotlinGenerator : public BaseGenerator {
               // fun pos(obj: Vec3) : Vec3? = obj.__assign(bb_pos + 4, bb)
               // ? adds nullability annotation
               GenerateFunOneLine(
-                  writer, field_name, "obj: " + field_type, return_type + "?",
+                  writer, field_name, "obj: " + field_type, return_type,
                   [&]() { writer += "obj.__assign(bb_pos + {{offset}}, bb)"; });
             } else {
               // create getter with object reuse
@@ -887,8 +953,7 @@ class KotlinGenerator : public BaseGenerator {
               //  }
               // ? adds nullability annotation
               GenerateFun(
-                  writer, field_name, "obj: " + field_type, return_type + "?",
-                  [&]() {
+                  writer, field_name, "obj: " + field_type, return_type, [&]() {
                     auto fixed = field.value.type.struct_def->fixed;
 
                     writer.SetValue("seek", Indirect("o + bb_pos", fixed));
@@ -908,7 +973,7 @@ class KotlinGenerator : public BaseGenerator {
             //         return if (o != 0) __string(o + bb_pos) else null
             //     }
             // ? adds nullability annotation
-            GenerateGetter(writer, field_name, return_type + "?", [&]() {
+            GenerateGetter(writer, field_name, return_type, [&]() {
               writer += "val o = __offset({{offset}})";
               writer += "return if (o != 0) __string(o + bb_pos) else null";
             });
@@ -926,15 +991,13 @@ class KotlinGenerator : public BaseGenerator {
 
             auto vectortype = field.value.type.VectorType();
             std::string params = "j: Int";
-            std::string nullable = IsScalar(vectortype.base_type) ? "" : "?";
 
             if (vectortype.base_type == BASE_TYPE_STRUCT ||
                 vectortype.base_type == BASE_TYPE_UNION) {
               params = "obj: " + field_type + ", j: Int";
             }
 
-            auto ret_type = return_type + nullable;
-            GenerateFun(writer, field_name, params, ret_type, [&]() {
+            GenerateFun(writer, field_name, params, return_type, [&]() {
               auto inline_size = NumToString(InlineSize(vectortype));
               auto index = "__vector(o) + j * " + inline_size;
               auto not_found = NotFoundReturn(field.value.type.element);
@@ -959,12 +1022,11 @@ class KotlinGenerator : public BaseGenerator {
             break;
           }
           case BASE_TYPE_UNION:
-            GenerateFun(writer, field_name, "obj: " + field_type,
-                        return_type + "?", [&]() {
-                          writer += OffsetWrapperOneLine(
-                              offset_val, bbgetter + "(obj, o + bb_pos)",
-                              "null");
-                        });
+            GenerateFun(
+                writer, field_name, "obj: " + field_type, return_type, [&]() {
+                  writer += OffsetWrapperOneLine(
+                      offset_val, bbgetter + "(obj, o + bb_pos)", "null");
+                });
             break;
           default: FLATBUFFERS_ASSERT(0);
         }
@@ -1256,10 +1318,13 @@ class KotlinGenerator : public BaseGenerator {
                                         const IDLOptions options) {
     // create a struct constructor function
     auto params = StructConstructorParams(struct_def);
-    GenerateFun(code, "create" + Esc(struct_def.name), params, "Int", [&]() {
-      GenStructBody(struct_def, code, "");
-      code += "return builder.offset()";
-    }, options.gen_jvmstatic);
+    GenerateFun(
+        code, "create" + Esc(struct_def.name), params, "Int",
+        [&]() {
+          GenStructBody(struct_def, code, "");
+          code += "return builder.offset()";
+        },
+        options.gen_jvmstatic);
   }
 
   static std::string StructConstructorParams(const StructDef &struct_def,
@@ -1445,9 +1510,7 @@ class KotlinGenerator : public BaseGenerator {
   // Prepend @JvmStatic to methods in companion object.
   static void GenerateJvmStaticAnnotation(CodeWriter &code,
                                           bool gen_jvmstatic) {
-    if (gen_jvmstatic) {
-      code += "@JvmStatic";
-    }
+    if (gen_jvmstatic) { code += "@JvmStatic"; }
   }
 
   // This tracks the current namespace used to determine if a type need to be
