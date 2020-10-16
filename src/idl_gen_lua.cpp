@@ -37,6 +37,12 @@ const char *SelfData = "self.view";
 const char *SelfDataPos = "self.view.pos";
 const char *SelfDataBytes = "self.view.bytes";
 
+std::string MakeCamel2(const std::string &in, bool first = true);
+
+std::string MakeCamel2(const std::string &in, bool first) {
+  return in;
+}
+
 class LuaGenerator : public BaseGenerator {
  public:
   LuaGenerator(const Parser &parser, const std::string &path,
@@ -112,7 +118,7 @@ class LuaGenerator : public BaseGenerator {
     code += std::string(Indent) + "local o = {}\n";
     code += std::string(Indent) +
             "setmetatable(o, {__index = function(t, key)\n" +
-            std::string(Indent) + "local f = rawget(NameTest_mt, key)\n" +
+            std::string(Indent) + "local f = rawget(" + NormalizedMetaName(struct_def) + ", key)\n" +
             std::string(Indent) + "if key == 'Init' then\n" +
             std::string(Indent) + Indent + "return f\n" +
             std::string(Indent) + "end\n" +
@@ -155,7 +161,7 @@ class LuaGenerator : public BaseGenerator {
     std::string &code = *code_ptr;
 
     GenReceiver(struct_def, code_ptr);
-    code += MakeCamel(NormalizedName(field)) + "Length()\n";
+    code += MakeCamel2(NormalizedName(field)) + "Length()\n";
     code += OffsetPrefix(field);
     code +=
         std::string(Indent) + Indent + "return " + SelfData + ":VectorLen(o)\n";
@@ -170,7 +176,7 @@ class LuaGenerator : public BaseGenerator {
     std::string &code = *code_ptr;
     std::string getter = GenGetter(field.value.type);
     GenReceiver(struct_def, code_ptr);
-    code += MakeCamel(NormalizedName(field));
+    code += MakeCamel2(NormalizedName(field));
     code += "()\n";
     code += std::string(Indent) + "return " + getter;
     code += std::string(SelfDataPos) + " + " + NumToString(field.value.offset) +
@@ -184,7 +190,7 @@ class LuaGenerator : public BaseGenerator {
     std::string &code = *code_ptr;
     std::string getter = GenGetter(field.value.type);
     GenReceiver(struct_def, code_ptr);
-    code += MakeCamel(NormalizedName(field));
+    code += MakeCamel2(NormalizedName(field));
     code += "()\n";
     code += OffsetPrefix(field);
     getter += std::string("o + ") + SelfDataPos + ")";
@@ -208,7 +214,7 @@ class LuaGenerator : public BaseGenerator {
                               const FieldDef &field, std::string *code_ptr) {
     std::string &code = *code_ptr;
     GenReceiver(struct_def, code_ptr);
-    code += MakeCamel(NormalizedName(field));
+    code += MakeCamel2(NormalizedName(field));
     code += "()\n";
     code += "local _temp = function(obj)\n";
     code += std::string(Indent) + "obj:Init(" + SelfDataBytes + ", " +
@@ -227,7 +233,7 @@ class LuaGenerator : public BaseGenerator {
                              std::string *code_ptr) {
     std::string &code = *code_ptr;
     GenReceiver(struct_def, code_ptr);
-    code += MakeCamel(NormalizedName(field));
+    code += MakeCamel2(NormalizedName(field));
     code += "()\n";
     code += OffsetPrefix(field);
     if (field.value.type.struct_def->fixed) {
@@ -251,7 +257,7 @@ class LuaGenerator : public BaseGenerator {
                       std::string *code_ptr) {
     std::string &code = *code_ptr;
     GenReceiver(struct_def, code_ptr);
-    code += MakeCamel(NormalizedName(field));
+    code += MakeCamel2(NormalizedName(field));
     code += "()\n";
     code += OffsetPrefix(field);
     code +=
@@ -266,7 +272,7 @@ class LuaGenerator : public BaseGenerator {
                      std::string *code_ptr) {
     std::string &code = *code_ptr;
     GenReceiver(struct_def, code_ptr);
-    code += MakeCamel(NormalizedName(field)) + "()\n";
+    code += MakeCamel2(NormalizedName(field)) + "()\n";
     code += OffsetPrefix(field);
 
     // TODO(rw): this works and is not the good way to it:
@@ -296,10 +302,31 @@ class LuaGenerator : public BaseGenerator {
     std::string &code = *code_ptr;
     auto vectortype = field.value.type.VectorType();
 
+    std::string arr_key = "_fb_" + MakeCamel2(NormalizedName(field)) + "_arr";
+    std::string len_key = "_fb_" + MakeCamel2(NormalizedName(field)) + "_len";
+
     GenReceiver(struct_def, code_ptr);
-    code += MakeCamel(NormalizedName(field));
+    code += MakeCamel2(NormalizedName(field));
     code += "()\n";
-    code += "local _temp = function(j)\n";
+    code += "local ret = rawget(self, \"" + arr_key + "\")\n"
+            "if ret then\n"
+            "    return ret\n"
+            "end\n";
+    
+    code += "ret = setmetatable({}, "
+            "{\n"
+            "__len = function(t)\n"
+            "    local l = rawget(t, \"" + len_key + "\")\n"
+            "    if l then return l end\n"
+            "    local f = rawget(" + NormalizedMetaName(struct_def) + 
+            ", \"" +  MakeCamel2(NormalizedName(field)) + "Length\")\n"
+            "    l = f(t)\n"
+            "    rawset(t, \"" + len_key + "\", l)\n"
+            "    return l\n"
+            "end,\n\n";
+
+    code += "__index = function(t, j)\n"
+            "    if type(j) == 'number' then\n";
 
     code += OffsetPrefix(field);
     code +=
@@ -316,9 +343,28 @@ class LuaGenerator : public BaseGenerator {
         std::string(Indent) + Indent + "obj:Init(" + SelfDataBytes + ", x)\n";
     code += std::string(Indent) + Indent + "return obj\n";
     code += std::string(Indent) + End;
-    code += EndFunc;
 
-    code += "return _temp\n";
+    code += "    else\n"
+            "        return rawget(self, j)\n"
+            "    end\n"
+            "end,\n\n";
+
+    code += "__ipairs = function(t)\n"
+            "    local idx = 0\n"
+            "    local l = #t\n"
+            "    return function()\n"
+            "        idx = idx + 1\n"
+            "        if idx <= l then\n"
+            "            return idx, t[idx]\n"
+            "        end\n"
+            "    end\n"
+            "end\n"
+            "}\n";
+
+    code += ")\n"
+            "rawset(self, \"" + arr_key + "\", ret)\n"
+            "return ret\n";
+    
     code += EndFunc;
   }
 
@@ -330,10 +376,31 @@ class LuaGenerator : public BaseGenerator {
     std::string &code = *code_ptr;
     auto vectortype = field.value.type.VectorType();
 
+    std::string arr_key = "_fb_" + MakeCamel2(NormalizedName(field)) + "_arr";
+    std::string len_key = "_fb_" + MakeCamel2(NormalizedName(field)) + "_len";
+
     GenReceiver(struct_def, code_ptr);
-    code += MakeCamel(NormalizedName(field));
+    code += MakeCamel2(NormalizedName(field));
     code += "()\n";
-    code += "local _temp = function(j)\n";
+    code += "local ret = rawget(self, \"" + arr_key + "\")\n"
+            "if ret then\n"
+            "    return ret\n"
+            "end\n";
+    
+    code += "ret = setmetatable({}, "
+            "{\n"
+            "__len = function(t)\n"
+            "    local l = rawget(t, \"" + len_key + "\")\n"
+            "    if l then return l end\n"
+            "    local f = rawget(" + NormalizedMetaName(struct_def) + 
+            ", \"" +  MakeCamel2(NormalizedName(field)) + "Length\")\n"
+            "    l = f(t)\n"
+            "    rawset(t, \"" + len_key + "\", l)\n"
+            "    return l\n"
+            "end,\n\n";
+
+    code += "__index = function(t, j)\n"
+            "    if type(j) == 'number' then\n";
 
     code += OffsetPrefix(field);
     code +=
@@ -348,9 +415,28 @@ class LuaGenerator : public BaseGenerator {
     } else {
       code += std::string(Indent) + "return 0\n";
     }
-    code += EndFunc;
 
-    code += "return _temp\n";
+    code += "    else\n"
+            "        return rawget(self, j)\n"
+            "    end\n"
+            "end,\n\n";
+
+    code += "__ipairs = function(t)\n"
+            "    local idx = 0\n"
+            "    local l = #t\n"
+            "    return function()\n"
+            "        idx = idx + 1\n"
+            "        if idx <= l then\n"
+            "            return idx, t[idx]\n"
+            "        end\n"
+            "    end\n"
+            "end\n"
+            "}\n";
+
+    code += ")\n"
+            "rawset(self, \"" + arr_key + "\", ret)\n"
+            "return ret\n";
+    
     code += EndFunc;
   }
 
