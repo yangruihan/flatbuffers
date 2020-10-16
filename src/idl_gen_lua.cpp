@@ -111,8 +111,13 @@ class LuaGenerator : public BaseGenerator {
     code += "function " + NormalizedName(struct_def) + ".New()\n";
     code += std::string(Indent) + "local o = {}\n";
     code += std::string(Indent) +
-            "setmetatable(o, {__index = " + NormalizedMetaName(struct_def) +
-            "})\n";
+            "setmetatable(o, {__index = function(t, key)\n" +
+            std::string(Indent) + "local f = rawget(NameTest_mt, key)\n" +
+            std::string(Indent) + "if key == 'Init' then\n" +
+            std::string(Indent) + Indent + "return f\n" +
+            std::string(Indent) + "end\n" +
+            std::string(Indent) + "return f(t)\n"
+            + "end})";
     code += std::string(Indent) + "return o\n";
     code += EndFunc;
   }
@@ -204,11 +209,15 @@ class LuaGenerator : public BaseGenerator {
     std::string &code = *code_ptr;
     GenReceiver(struct_def, code_ptr);
     code += MakeCamel(NormalizedName(field));
-    code += "(obj)\n";
+    code += "()\n";
+    code += "local _temp = function(obj)\n";
     code += std::string(Indent) + "obj:Init(" + SelfDataBytes + ", " +
             SelfDataPos + " + ";
     code += NumToString(field.value.offset) + ")\n";
     code += std::string(Indent) + "return obj\n";
+    code += EndFunc;
+
+    code += "return _temp\n";
     code += EndFunc;
   }
 
@@ -289,7 +298,9 @@ class LuaGenerator : public BaseGenerator {
 
     GenReceiver(struct_def, code_ptr);
     code += MakeCamel(NormalizedName(field));
-    code += "(j)\n";
+    code += "()\n";
+    code += "local _temp = function(j)\n";
+
     code += OffsetPrefix(field);
     code +=
         std::string(Indent) + Indent + "local x = " + SelfData + ":Vector(o)\n";
@@ -306,6 +317,9 @@ class LuaGenerator : public BaseGenerator {
     code += std::string(Indent) + Indent + "return obj\n";
     code += std::string(Indent) + End;
     code += EndFunc;
+
+    code += "return _temp\n";
+    code += EndFunc;
   }
 
   // Get the value of a vector's non-struct member. Uses a named return
@@ -318,7 +332,9 @@ class LuaGenerator : public BaseGenerator {
 
     GenReceiver(struct_def, code_ptr);
     code += MakeCamel(NormalizedName(field));
-    code += "(j)\n";
+    code += "()\n";
+    code += "local _temp = function(j)\n";
+
     code += OffsetPrefix(field);
     code +=
         std::string(Indent) + Indent + "local a = " + SelfData + ":Vector(o)\n";
@@ -332,6 +348,9 @@ class LuaGenerator : public BaseGenerator {
     } else {
       code += std::string(Indent) + "return 0\n";
     }
+    code += EndFunc;
+
+    code += "return _temp\n";
     code += EndFunc;
   }
 
